@@ -1,5 +1,5 @@
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import SectionHeader from '../components/SectionHeader.jsx'
 
 const inquiryCategories = [
@@ -30,6 +30,9 @@ function Contact() {
   const [formData, setFormData] = useState(initialForm)
   const [errors, setErrors] = useState({})
   const [isSubmitted, setIsSubmitted] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const submissionInProgress = useRef(false)
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -37,6 +40,7 @@ function Contact() {
     setFormData((prev) => ({ ...prev, [name]: value }))
     setErrors((prev) => ({ ...prev, [name]: '' }))
     setIsSubmitted(false)
+    setSubmitError('')
   }
 
   const validateForm = () => {
@@ -71,8 +75,12 @@ function Contact() {
     return nextErrors
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
+
+    if (submissionInProgress.current) {
+      return
+    }
 
     const nextErrors = validateForm()
 
@@ -83,8 +91,50 @@ function Contact() {
     }
 
     setErrors({})
-    setIsSubmitted(true)
-    setFormData(initialForm)
+    setSubmitError('')
+    submissionInProgress.current = true
+    setIsSubmitting(true)
+
+    const submittedForm = { ...formData }
+    const inquiry = {
+      name: submittedForm.name.trim(),
+      email: submittedForm.email.trim(),
+      phone: submittedForm.phone.trim(),
+      category: submittedForm.category.trim(),
+      subject: submittedForm.subject.trim(),
+      message: submittedForm.message.trim(),
+    }
+
+    try {
+      const response = await fetch('/api/inquiries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(inquiry),
+      })
+      const result = await response.json().catch(() => null)
+
+      if (!response.ok || result?.success !== true) {
+        setSubmitError(
+          'We could not send your inquiry right now. Please try again later.',
+        )
+        return
+      }
+
+      setIsSubmitted(true)
+      setFormData((currentForm) => {
+        const unchanged = Object.keys(submittedForm).every(
+          (field) => currentForm[field] === submittedForm[field],
+        )
+        return unchanged ? initialForm : currentForm
+      })
+    } catch {
+      setSubmitError(
+        'We could not send your inquiry right now. Please check your connection and try again.',
+      )
+    } finally {
+      submissionInProgress.current = false
+      setIsSubmitting(false)
+    }
   }
 
   const contactDetails = [
@@ -280,18 +330,30 @@ function Contact() {
               </div>
 
               <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <button type="submit" className="btn-primary">
-                  Submit Inquiry
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? 'Submitting…' : 'Submit Inquiry'}
                 </button>
                 <p className="text-sm text-[var(--muted)]">
-                  Demo only — backend connection pending.
+                  We’ll be in touch about your inquiry.
                 </p>
               </div>
 
+              {submitError && (
+                <div
+                  className="mt-6 border border-red-500 bg-red-50 p-4 text-sm text-red-700"
+                  role="alert"
+                >
+                  {submitError}
+                </div>
+              )}
+
               {isSubmitted && (
                 <div className="mt-6 border border-emerald-700 bg-emerald-50 p-4 text-sm text-emerald-900">
-                  Your form passed validation, but this is currently a demo.
-                  Your inquiry has not been sent or stored.
+                  Thank you. Your inquiry has been submitted successfully.
                 </div>
               )}
             </form>
