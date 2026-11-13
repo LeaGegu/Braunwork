@@ -4,15 +4,49 @@ import {
   createSupabaseClient,
   supabase,
 } from './config/supabase.js';
+import {
+  createPublicInquirySubmitter,
+  createSupabaseAdminClient,
+} from './config/supabaseAdmin.js';
 import { requireAuth } from './middleware/requireAuth.js';
+import { createPublicInquiriesRouter } from './routes/publicInquiries.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const supabaseAdmin = createSupabaseAdminClient();
+
+function getPositiveIntegerEnv(name, fallback, maximum = Number.MAX_SAFE_INTEGER) {
+  const value = process.env[name];
+  if (value === undefined || value.trim() === '') {
+    return fallback;
+  }
+
+  if (!/^[1-9]\d*$/.test(value) || Number(value) > maximum) {
+    throw new Error(`${name} must be a positive integer no greater than ${maximum}.`);
+  }
+
+  return Number(value);
+}
 
 app.locals.supabase = supabase;
 app.locals.createSupabaseClient = createSupabaseClient;
 app.locals.createAuthenticatedSupabaseClient = createAuthenticatedSupabaseClient;
 
+app.use(
+  '/api/inquiries',
+  createPublicInquiriesRouter({
+    submitPublicInquiry: createPublicInquirySubmitter(supabaseAdmin),
+    rateLimitWindowMs: getPositiveIntegerEnv(
+      'PUBLIC_INQUIRY_RATE_LIMIT_WINDOW_MS',
+      15 * 60 * 1000,
+      2_147_483_647,
+    ),
+    rateLimitMax: getPositiveIntegerEnv(
+      'PUBLIC_INQUIRY_RATE_LIMIT_MAX',
+      5,
+    ),
+  }),
+);
 app.use(express.json());
 
 app.post('/api/auth/login', async (req, res) => {
@@ -161,10 +195,15 @@ app.get('/api/supabase/health', async (req, res) => {
 });
 
 app.use((error, req, res, next) => {
-  if (error.type === 'entity.parse.failed') {
+  if (
+    error.type === 'entity.parse.failed' ||
+    error.type === 'entity.too.large'
+  ) {
     return res.status(400).json({
       success: false,
-      message: 'Request body must be valid JSON.',
+      message: error.type === 'entity.too.large'
+        ? 'Request body exceeds the allowed size.'
+        : 'Request body must be valid JSON.',
     });
   }
 
