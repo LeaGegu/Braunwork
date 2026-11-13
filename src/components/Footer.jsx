@@ -1,3 +1,4 @@
+
 function Footer() {
   const year = new Date().getFullYear()
 
@@ -18,6 +19,7 @@ function Footer() {
               </div>
             </div>
           </div>
+
           <p className="max-w-xs text-sm leading-6 text-[rgba(245,241,235,0.72)]">
             Built on Experience. Driven by Systems. Focused on Quality.
           </p>
@@ -48,11 +50,31 @@ function Footer() {
 
         <div>
           <h3 className="mb-4 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--greige)]">
-            Location
+            Contact & Location
           </h3>
-          <p className="text-sm leading-6 text-[rgba(245,241,235,0.72)]">
-            Dasmariñas City, Cavite, Philippines
-          </p>
+          <div className="space-y-3 text-sm leading-6 text-[rgba(245,241,235,0.72)]">
+            <p>Dasmariñas City, Cavite, Philippines</p>
+            <p>
+              <a href="mailto:braunwork.hcorp@gmail.com" className="hover:text-[var(--bg-ivory)]">
+                braunwork.hcorp@gmail.com
+              </a>
+            </p>
+            <p>
+              <a href="tel:+639054528100" className="hover:text-[var(--bg-ivory)]">
+                +63905 452 8100
+              </a>
+            </p>
+            <p>
+              <a
+                href="https://www.instagram.com/braunwork.h/"
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-[var(--bg-ivory)]"
+              >
+                Instagram
+              </a>
+            </p>
+          </div>
         </div>
       </div>
 

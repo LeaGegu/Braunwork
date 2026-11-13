@@ -1,24 +1,29 @@
+
 function Process() {
   const steps = [
     {
       number: '01',
       title: 'Consultation',
-      description: 'Understand the client\'s needs, goals, and project scope.',
+      description:
+        'We discuss your ideas, requirements, preferred style, budget, and project goals to understand what you need.',
     },
     {
       number: '02',
-      title: 'Planning',
-      description: 'Discuss the project requirements and plan the appropriate approach.',
+      title: 'Planning & Design',
+      description:
+        'We develop the project approach, discuss materials and specifications, and prepare the necessary designs and plans.',
     },
     {
       number: '03',
-      title: 'Build',
-      description: 'Carry out the agreed construction, fabrication, or improvement work.',
+      title: 'Execution',
+      description:
+        'Our team carries out the agreed construction, fabrication, or installation work with attention to detail and quality.',
     },
     {
       number: '04',
-      title: 'Finish',
-      description: 'Complete the work with attention to quality and detail.',
+      title: 'Completion & Turnover',
+      description:
+        'We complete the project, review the finished work, and prepare the space for handover.',
     },
   ]
 
@@ -27,7 +32,13 @@ function Process() {
       <div className="container-shell">
         <div className="mb-12 max-w-3xl">
           <p className="eyebrow mb-4">Our Process</p>
-          <h2 className="section-title">A clear, practical path from concept to completion.</h2>
+          <h2 className="section-title">
+            A clear, practical path from concept to completion.
+          </h2>
+          <p className="mt-5 body-copy">
+            Every project starts with understanding your needs and ends with
+            delivering a space built with care and purpose.
+          </p>
         </div>
 
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
@@ -37,9 +48,15 @@ function Process() {
               className="reveal-card border border-[var(--line)] bg-[var(--bg-ivory)] p-6 sm:p-7"
               style={{ animationDelay: `${index * 80}ms` }}
             >
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--brown)]">{step.number}</p>
-              <h3 className="mt-4 text-2xl font-medium tracking-[-0.04em] text-[var(--charcoal)]">{step.title}</h3>
-              <p className="mt-4 text-base leading-7 text-[var(--muted)]">{step.description}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--brown)]">
+                {step.number}
+              </p>
+              <h3 className="mt-4 text-2xl font-medium tracking-[-0.04em] text-[var(--charcoal)]">
+                {step.title}
+              </h3>
+              <p className="mt-4 text-base leading-7 text-[var(--muted)]">
+                {step.description}
+              </p>
             </div>
           ))}
         </div>

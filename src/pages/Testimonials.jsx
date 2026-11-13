@@ -1,3 +1,4 @@
+
 const reviews = [
   {
     author: 'Janice Bartolome',
@@ -37,25 +38,36 @@ function Testimonials() {
       <div className="container-shell">
         <div className="mb-12 max-w-3xl">
           <p className="eyebrow mb-4">Reviews / Client Feedback</p>
-          <h2 className="section-title">What clients say about Braunwork.</h2>
+          <h2 className="section-title">
+            What clients say about Braunwork.
+          </h2>
+          <p className="mt-5 body-copy">
+            The experiences and feedback shared by clients reflect the care
+            and attention that go into every project.
+          </p>
         </div>
 
-        <div className="mb-12">
+        <div className="mb-14">
           <div className="mb-6">
             <p className="eyebrow">Client Reviews</p>
           </div>
+
           <div className="grid gap-6 lg:grid-cols-2">
             {reviews.map((review, index) => (
               <article
                 key={review.author}
-                className="reveal-card border border-[var(--line)] bg-[var(--panel)] p-6 shadow-[var(--shadow-soft)]"
+                className="reveal-card flex flex-col border border-[var(--line)] bg-[var(--panel)] p-7 shadow-[var(--shadow-soft)] sm:p-8"
                 style={{ animationDelay: `${index * 100}ms` }}
               >
-                <div className="mb-5 flex h-10 w-10 items-center justify-center border border-[var(--charcoal)] bg-[var(--charcoal)] text-[var(--bg-ivory)]">
+                <div className="mb-5 flex h-10 w-10 items-center justify-center border border-[var(--charcoal)] bg-[var(--charcoal)] text-xl text-[var(--bg-ivory)]">
                   “
                 </div>
-                <p className="text-lg leading-8 text-[var(--charcoal)]">{review.quote}</p>
-                <p className="mt-5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--brown)]">
+
+                <p className="flex-1 whitespace-pre-line text-base leading-8 text-[var(--charcoal)]">
+                  {review.quote}
+                </p>
+
+                <p className="mt-7 border-t border-[var(--line)] pt-5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--brown)]">
                   {review.author}
                 </p>
               </article>
@@ -67,15 +79,19 @@ function Testimonials() {
           <div className="mb-6">
             <p className="eyebrow">Notable Mentions</p>
           </div>
+
           <div className="grid gap-6 md:grid-cols-2">
             {notableMentions.map((mention, index) => (
               <article
                 key={mention.author}
-                className="reveal-card border border-[var(--line)] bg-[var(--panel)] p-6 shadow-[var(--shadow-soft)]"
+                className="reveal-card flex flex-col border border-[var(--line)] bg-[var(--panel)] p-7 shadow-[var(--shadow-soft)] sm:p-8"
                 style={{ animationDelay: `${index * 100}ms` }}
               >
-                <p className="text-lg leading-8 text-[var(--charcoal)]">{mention.quote}</p>
-                <p className="mt-5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--brown)]">
+                <p className="flex-1 whitespace-pre-line text-base leading-8 text-[var(--charcoal)]">
+                  {mention.quote}
+                </p>
+
+                <p className="mt-7 border-t border-[var(--line)] pt-5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--brown)]">
                   {mention.author}
                 </p>
               </article>
