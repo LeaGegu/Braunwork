@@ -3,12 +3,13 @@ const unauthorizedResponse = {
   message: 'A valid Bearer access token is required.',
 };
 
-export async function requireAuth(req, res, next) {
+async function authenticateUser(req, res) {
   const authorization = req.get('Authorization');
   const match = authorization?.match(/^Bearer\s+(\S+)$/i);
 
   if (!match) {
-    return res.status(401).json(unauthorizedResponse);
+    res.status(401).json(unauthorizedResponse);
+    return false;
   }
 
   const accessToken = match[1];
@@ -18,23 +19,39 @@ export async function requireAuth(req, res, next) {
     const { data, error } = await req.app.locals.supabase.auth.getUser(accessToken);
     user = error ? null : data.user;
   } catch {
-    return res.status(401).json(unauthorizedResponse);
+    res.status(401).json(unauthorizedResponse);
+    return false;
   }
 
   if (!user) {
-    return res.status(401).json(unauthorizedResponse);
+    res.status(401).json(unauthorizedResponse);
+    return false;
   }
 
   req.user = user;
+  req.accessToken = accessToken;
+  return true;
+}
+
+export async function requireAuthenticatedUser(req, res, next) {
+  if (await authenticateUser(req, res)) {
+    return next();
+  }
+}
+
+export async function requireAuth(req, res, next) {
+  if (!await authenticateUser(req, res)) {
+    return;
+  }
 
   let staffProfile;
   try {
     const authenticatedSupabase =
-      req.app.locals.createAuthenticatedSupabaseClient(accessToken);
+      req.app.locals.createAuthenticatedSupabaseClient(req.accessToken);
     const { data, error } = await authenticatedSupabase
       .from('staff_profiles')
       .select('id, full_name, role, can_manage_inquiries, is_active')
-      .eq('id', user.id)
+      .eq('id', req.user.id)
       .eq('is_active', true)
       .maybeSingle();
 
