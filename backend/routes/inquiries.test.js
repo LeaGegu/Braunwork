@@ -34,6 +34,11 @@ function createQuery(table, result, calls, state) {
       filters[field] = value;
       return this;
     },
+    is(field, value) {
+      calls.push({ table, method: 'is', field, value });
+      filters[field] = null;
+      return this;
+    },
     or(filters) {
       calls.push({ table, method: 'or', filters });
       assignmentFilter = filters;
@@ -104,6 +109,7 @@ async function withInquiryServer({
   tableResults = {},
   state,
   clientError,
+  rpcResult = { data: [inquiry], error: null },
   run,
 }) {
   const calls = [];
@@ -132,6 +138,12 @@ async function withInquiryServer({
           calls,
           state,
         );
+      },
+      async rpc(name, args) {
+        calls.push({ method: 'rpc', name, args });
+        return typeof rpcResult === 'function'
+          ? rpcResult(name, args)
+          : rpcResult;
       },
     };
   };
@@ -226,6 +238,103 @@ test('lists inquiries with validated pagination using the caller JWT', async () 
   });
 });
 
+test('filters and sorts inquiries using the validated query parameters', async () => {
+  await withInquiryServer({
+    tableResults: {
+      inquiries: { data: [], error: null, count: 0 },
+    },
+    run: async (url, { calls }) => {
+      const response = await fetch(
+        `${url}?search=Harley%2C%20Kitchen&status=waiting&category=Modular%20Kitchen&assigned_to=unassigned&sort=oldest`,
+        { headers: authHeaders() },
+      );
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        success: true,
+        data: [],
+        pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+      });
+      assert.ok(calls.some((call) =>
+        call.method === 'or' &&
+        call.filters === 'name.ilike."*Harley, Kitchen*",email.ilike."*Harley, Kitchen*",subject.ilike."*Harley, Kitchen*"'
+      ));
+      assert.ok(calls.some((call) =>
+        call.method === 'eq' &&
+        call.field === 'status' &&
+        call.value === 'waiting'
+      ));
+      assert.ok(calls.some((call) =>
+        call.method === 'eq' &&
+        call.field === 'category' &&
+        call.value === 'Modular Kitchen'
+      ));
+      assert.ok(calls.some((call) =>
+        call.method === 'is' &&
+        call.field === 'assigned_to' &&
+        call.value === null
+      ));
+      assert.ok(calls.some((call) =>
+        call.method === 'order' &&
+        call.field === 'created_at' &&
+        call.options.ascending === true
+      ));
+    },
+  });
+});
+
+test('returns exact summary counts for available inquiry statuses', async () => {
+  await withInquiryServer({
+    tableResults: {
+      inquiries: { data: [], error: null, count: 0 },
+    },
+    run: async (url, { calls }) => {
+      const response = await fetch(`${url}/summary`, {
+        headers: authHeaders(),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        success: true,
+        data: {
+          total: 0,
+          new: 0,
+          in_progress: 0,
+          waiting: 0,
+          resolved: 0,
+          archived: 0,
+        },
+      });
+      assert.equal(
+        calls.filter((call) =>
+          call.method === 'select' &&
+          call.options?.head === true
+        ).length,
+        6,
+      );
+    },
+  });
+});
+
+test('lists only caller-visible eligible assignee directory entries', async () => {
+  const directory = [{ id: user.id, full_name: 'Staff Member' }];
+  await withInquiryServer({
+    tableResults: {
+      inquiry_assignee_directory: { data: directory, error: null },
+    },
+    run: async (url, { calls }) => {
+      const response = await fetch(`${url}/assignees`, {
+        headers: authHeaders(),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { success: true, data: directory });
+      assert.ok(calls.some((call) =>
+        call.table === 'inquiry_assignee_directory' &&
+        call.method === 'order' &&
+        call.field === 'full_name'
+      ));
+    },
+  });
+});
+
 test('lists assigned staff names using only the caller-visible ID/name directory', async () => {
   const assignedInquiry = {
     ...inquiry,
@@ -315,10 +424,21 @@ test('retrieves an inquiry and its messages', async () => {
     recipient_email: null,
     created_at: '2026-01-02T00:00:00.000Z',
   }];
+  const activities = [{
+    id: 1,
+    inquiry_id: inquiryId,
+    actor_user_id: user.id,
+    actor_name: 'Staff Member',
+    activity_type: 'status_changed',
+    previous_value: 'new',
+    new_value: 'in_progress',
+    created_at: '2026-01-03T00:00:00.000Z',
+  }];
   await withInquiryServer({
     tableResults: {
       inquiries: { data: inquiry, error: null },
       inquiry_messages: { data: messages, error: null },
+      inquiry_activity: { data: activities, error: null },
     },
     run: async (url, { calls }) => {
       const response = await fetch(`${url}/${inquiryId}`, {
@@ -329,6 +449,7 @@ test('retrieves an inquiry and its messages', async () => {
         success: true,
         inquiry,
         messages,
+        activities,
       });
       assert.match(
         calls.find((call) =>
@@ -377,112 +498,157 @@ test('admin can update status regardless of can_manage_inquiries', async () => {
   });
 });
 
-test('assigns an inquiry to the authenticated user', async () => {
-  const updatedInquiry = { ...inquiry, assigned_to: user.id };
+test('creates, edits, and removes follow-ups through the authenticated RPC', async () => {
+  const followUpAt = '2026-03-01T10:00:00.000Z';
   await withInquiryServer({
-    tableResults: {
-      inquiries: { data: updatedInquiry, error: null },
-    },
+    rpcResult: (_name, args) => ({
+      data: [{
+        id: inquiryId,
+        follow_up_at: args.p_follow_up_at,
+        follow_up_note: args.p_follow_up_note,
+        updated_at: '2026-01-02T00:00:00.000Z',
+      }],
+      error: null,
+    }),
     run: async (url, { calls, clientTokens }) => {
-      const response = await fetch(
-        `${url}/${inquiryId}/assignment`,
-        jsonOptions('PATCH', { assigned_to: user.id }),
+      for (const [date, note, expectedNote] of [
+        [followUpAt, ' Create reminder ', 'Create reminder'],
+        ['2026-03-02T10:00:00.000Z', 'Edit reminder', 'Edit reminder'],
+        [null, null, null],
+      ]) {
+        const response = await fetch(
+          `${url}/${inquiryId}/follow-up`,
+          jsonOptions('PATCH', {
+            follow_up_at: date,
+            follow_up_note: note,
+          }),
+        );
+        assert.equal(response.status, 200);
+        const body = await response.json();
+        assert.equal(body.success, true);
+        assert.equal(body.inquiry.follow_up_at, date);
+        assert.equal(body.inquiry.follow_up_note, expectedNote);
+      }
+
+      const rpcCalls = calls.filter((call) =>
+        call.method === 'rpc' &&
+        call.name === 'admin_update_inquiry_follow_up'
       );
-      assert.equal(response.status, 200);
-      assert.deepEqual(await response.json(), {
-        success: true,
-        inquiry: updatedInquiry,
-      });
-      assert.deepEqual(calls.find((call) => call.method === 'update').values, {
-        assigned_to: user.id,
-      });
+      assert.deepEqual(
+        rpcCalls.map(({ args }) => args),
+        [
+          {
+            p_inquiry_id: inquiryId,
+            p_follow_up_at: followUpAt,
+            p_follow_up_note: 'Create reminder',
+          },
+          {
+            p_inquiry_id: inquiryId,
+            p_follow_up_at: '2026-03-02T10:00:00.000Z',
+            p_follow_up_note: 'Edit reminder',
+          },
+          {
+            p_inquiry_id: inquiryId,
+            p_follow_up_at: null,
+            p_follow_up_note: null,
+          },
+        ],
+      );
+      assert.equal(calls.some((call) => call.method === 'update'), false);
       assert.ok(clientTokens.includes('verified-access-token'));
     },
   });
 });
 
-test('unassigns an unassigned inquiry when assigned_to is null', async () => {
-  const updatedInquiry = { ...inquiry, assigned_to: null };
+test('denies inactive or unauthorized staff before follow-up updates', async () => {
   await withInquiryServer({
-    tableResults: {
-      inquiries: { data: updatedInquiry, error: null },
-    },
+    profile: { role: 'staff', can_manage_inquiries: false, is_active: true },
     run: async (url, { calls }) => {
       const response = await fetch(
-        `${url}/${inquiryId}/assignment`,
-        jsonOptions('PATCH', { assigned_to: null }),
+        `${url}/${inquiryId}/follow-up`,
+        jsonOptions('PATCH', {
+          follow_up_at: '2026-03-01T10:00:00.000Z',
+          follow_up_note: 'Call customer',
+        }),
       );
-      assert.equal(response.status, 200);
-      assert.deepEqual(await response.json(), {
-        success: true,
-        inquiry: updatedInquiry,
-      });
-      assert.deepEqual(calls.find((call) => call.method === 'update').values, {
-        assigned_to: null,
-      });
-      assert.deepEqual(calls.find((call) => call.method === 'or'), {
-        table: 'inquiries',
-        method: 'or',
-        filters: `assigned_to.is.null,assigned_to.eq.${user.id}`,
-      });
-    },
-  });
-});
-
-test('unassigns an inquiry assigned to the authenticated user', async () => {
-  const updatedInquiry = { ...inquiry, assigned_to: null };
-  await withInquiryServer({
-    tableResults: {
-      inquiries: { data: updatedInquiry, error: null },
-    },
-    run: async (url, { calls }) => {
-      const response = await fetch(
-        `${url}/${inquiryId}/assignment`,
-        jsonOptions('PATCH', { assigned_to: null }),
-      );
-      assert.equal(response.status, 200);
-      assert.deepEqual(await response.json(), {
-        success: true,
-        inquiry: updatedInquiry,
-      });
-      assert.deepEqual(calls.find((call) => call.method === 'update').values, {
-        assigned_to: null,
-      });
-      assert.ok(calls.some((call) =>
-        call.method === 'or' &&
-        call.filters === `assigned_to.is.null,assigned_to.eq.${user.id}`
-      ));
-    },
-  });
-});
-
-test('rejects unassigning an inquiry assigned to another staff member', async () => {
-  const otherStaffId = '00000000-0000-4000-8000-000000000099';
-  const state = {
-    callerId: user.id,
-    inquiries: [{ ...inquiry, assigned_to: otherStaffId }],
-  };
-  await withInquiryServer({
-    state,
-    run: async (url, { calls, clientTokens }) => {
-      const response = await fetch(
-        `${url}/${inquiryId}/assignment`,
-        jsonOptions('PATCH', { assigned_to: null }),
-      );
-      assert.equal(response.status, 409);
+      assert.equal(response.status, 403);
       assert.deepEqual(await response.json(), {
         success: false,
-        message: 'This inquiry is assigned to another staff member or is no longer available to unassign.',
+        message: 'Inquiry management access is required.',
       });
-      assert.ok(calls.some((call) =>
-        call.method === 'or' &&
-        call.filters === `assigned_to.is.null,assigned_to.eq.${user.id}`
-      ));
-      assert.deepEqual(calls.find((call) => call.method === 'update').values, {
-        assigned_to: null,
+      assert.equal(calls.some((call) => call.method === 'rpc'), false);
+    },
+  });
+});
+
+test('handles follow-up RPC authorization, validation, and database failures safely', async (t) => {
+  for (const [code, status, message] of [
+    ['42501', 403, 'Inquiry management access is required.'],
+    ['22023', 400, 'Provide a valid follow-up date and note, or clear both.'],
+    ['XX000', 503, 'Unable to access inquiry data right now.'],
+  ]) {
+    await t.test(code, async () => {
+      await withInquiryServer({
+        rpcResult: {
+          data: null,
+          error: { code, message: 'private database detail' },
+        },
+        run: async (url, { calls }) => {
+          const response = await fetch(
+            `${url}/${inquiryId}/follow-up`,
+            jsonOptions('PATCH', {
+              follow_up_at: '2026-03-01T10:00:00.000Z',
+              follow_up_note: 'Call customer',
+            }),
+          );
+          assert.equal(response.status, status);
+          const body = await response.text();
+          assert.equal(body.includes('private database detail'), false);
+          assert.deepEqual(JSON.parse(body), { success: false, message });
+          assert.ok(calls.some((call) =>
+            call.method === 'rpc' &&
+            call.name === 'admin_update_inquiry_follow_up'
+          ));
+        },
+      });
+    });
+  }
+});
+
+test('assigns inquiries to selected active staff with optimistic concurrency', async () => {
+  const assigneeId = '00000000-0000-4000-8000-000000000099';
+  const updatedInquiry = {
+    id: inquiryId,
+    assigned_to: assigneeId,
+    updated_at: '2026-01-02T00:00:00.000Z',
+  };
+  await withInquiryServer({
+    rpcResult: { data: [updatedInquiry], error: null },
+    run: async (url, { calls, clientTokens }) => {
+      const response = await fetch(
+        `${url}/${inquiryId}/assignment`,
+        jsonOptions('PATCH', {
+          assigned_to: assigneeId,
+          expected_assigned_to: null,
+        }),
+      );
+      assert.equal(response.status, 200);
+      const responseBody = await response.json();
+      assert.deepEqual(responseBody, {
+        success: true,
+        inquiry: updatedInquiry,
+      });
+      assert.equal('email' in responseBody.inquiry, false);
+      assert.deepEqual(calls.find((call) => call.method === 'rpc'), {
+        method: 'rpc',
+        name: 'admin_assign_inquiry',
+        args: {
+          p_inquiry_id: inquiryId,
+          p_assigned_to: assigneeId,
+          p_expected_assigned_to: null,
+        },
       });
       assert.ok(clientTokens.includes('verified-access-token'));
-      assert.equal(state.inquiries[0].assigned_to, otherStaffId);
     },
   });
 });
@@ -493,7 +659,10 @@ test('denies staff without inquiry permission on assignment endpoint', async () 
     run: async (url, { calls }) => {
       const response = await fetch(
         `${url}/${inquiryId}/assignment`,
-        jsonOptions('PATCH', { assigned_to: user.id }),
+        jsonOptions('PATCH', {
+          assigned_to: user.id,
+          expected_assigned_to: null,
+        }),
       );
       assert.equal(response.status, 403);
       assert.deepEqual(inquiryCalls(calls), []);
@@ -517,7 +686,10 @@ test('rejects invalid assignment inquiry IDs and request bodies', async () => {
   await withInquiryServer({ run: async (url, { calls }) => {
     const invalidInquiryId = await fetch(
       `${url}/not-a-uuid/assignment`,
-      jsonOptions('PATCH', { assigned_to: user.id }),
+      jsonOptions('PATCH', {
+        assigned_to: user.id,
+        expected_assigned_to: null,
+      }),
     );
     const missingAssignment = await fetch(
       `${url}/${inquiryId}/assignment`,
@@ -525,47 +697,104 @@ test('rejects invalid assignment inquiry IDs and request bodies', async () => {
     );
     const extraField = await fetch(
       `${url}/${inquiryId}/assignment`,
-      jsonOptions('PATCH', { assigned_to: user.id, status: 'resolved' }),
+      jsonOptions('PATCH', {
+        assigned_to: user.id,
+        expected_assigned_to: null,
+        status: 'resolved',
+      }),
     );
     const invalidAssignedId = await fetch(
       `${url}/${inquiryId}/assignment`,
-      jsonOptions('PATCH', { assigned_to: 'not-a-uuid' }),
+      jsonOptions('PATCH', {
+        assigned_to: 'not-a-uuid',
+        expected_assigned_to: null,
+      }),
+    );
+    const invalidExpectedId = await fetch(
+      `${url}/${inquiryId}/assignment`,
+      jsonOptions('PATCH', {
+        assigned_to: user.id,
+        expected_assigned_to: 'not-a-uuid',
+      }),
     );
 
     assert.equal(invalidInquiryId.status, 400);
     assert.equal(missingAssignment.status, 400);
     assert.equal(extraField.status, 400);
     assert.equal(invalidAssignedId.status, 400);
+    assert.equal(invalidExpectedId.status, 400);
     assert.deepEqual(inquiryCalls(calls), []);
   } });
 });
 
-test('does not allow assigning an inquiry to another user', async () => {
-  await withInquiryServer({ run: async (url, { calls }) => {
+test('rejects assignment to an inactive staff profile', async () => {
+  const assigneeId = '00000000-0000-4000-8000-000000000099';
+  await withInquiryServer({
+    rpcResult: {
+      data: null,
+      error: { code: 'BW003', message: 'inactive assignee' },
+    },
+    run: async (url, { calls }) => {
     const response = await fetch(
       `${url}/${inquiryId}/assignment`,
       jsonOptions('PATCH', {
-        assigned_to: '00000000-0000-4000-8000-000000000099',
+        assigned_to: assigneeId,
+        expected_assigned_to: null,
       }),
     );
-    assert.equal(response.status, 403);
+    assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), {
       success: false,
-      message: 'You may only assign inquiries to yourself.',
+      message: 'Choose an active staff member for this assignment.',
     });
-    assert.deepEqual(inquiryCalls(calls), []);
+    assert.ok(calls.some((call) =>
+      call.method === 'rpc' &&
+      call.args.p_assigned_to === assigneeId
+    ));
   } });
 });
 
-test('returns not found when assignment query matches no inquiry', async () => {
+test('maps assignment RPC conflicts, forbidden results, and missing inquiries safely', async (t) => {
+  const assignmentBody = {
+    assigned_to: user.id,
+    expected_assigned_to: null,
+  };
+  for (const [code, status, message] of [
+    ['BW002', 409, 'The inquiry assignment changed. Refresh and try again.'],
+    ['BW003', 400, 'Choose an active staff member for this assignment.'],
+    ['P0002', 404, 'Inquiry not found.'],
+    ['42501', 403, 'Inquiry management access is required.'],
+  ]) {
+    await t.test(code, async () => {
+      await withInquiryServer({
+        rpcResult: { data: null, error: { code, message: 'private detail' } },
+        run: async (url, { calls }) => {
+          const response = await fetch(
+            `${url}/${inquiryId}/assignment`,
+            jsonOptions('PATCH', assignmentBody),
+          );
+          assert.equal(response.status, status);
+          assert.deepEqual(await response.json(), {
+            success: false,
+            message,
+          });
+          assert.ok(calls.some((call) => call.method === 'rpc'));
+        },
+      });
+    });
+  }
+});
+
+test('returns not found when assignment RPC returns no inquiry', async () => {
   await withInquiryServer({
-    tableResults: {
-      inquiries: { data: null, error: null },
-    },
+    rpcResult: { data: [], error: null },
     run: async (url) => {
       const response = await fetch(
         `${url}/${inquiryId}/assignment`,
-        jsonOptions('PATCH', { assigned_to: user.id }),
+        jsonOptions('PATCH', {
+          assigned_to: user.id,
+          expected_assigned_to: null,
+        }),
       );
       assert.equal(response.status, 404);
       assert.deepEqual(await response.json(), {
@@ -578,16 +807,17 @@ test('returns not found when assignment query matches no inquiry', async () => {
 
 test('hides assignment database failures', async () => {
   await withInquiryServer({
-    tableResults: {
-      inquiries: {
-        data: null,
-        error: { code: '42501', message: 'private assignment database error' },
-      },
+    rpcResult: {
+      data: null,
+      error: { code: 'XX000', message: 'private assignment database error' },
     },
     run: async (url) => {
       const response = await fetch(
         `${url}/${inquiryId}/assignment`,
-        jsonOptions('PATCH', { assigned_to: user.id }),
+        jsonOptions('PATCH', {
+          assigned_to: user.id,
+          expected_assigned_to: null,
+        }),
       );
       assert.equal(response.status, 503);
       const body = await response.text();

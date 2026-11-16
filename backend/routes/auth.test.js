@@ -46,6 +46,7 @@ async function withAuthServer({
   profileResult = { data: staffProfile, error: null },
   profileError,
   tokenResult = { data: { user }, error: null },
+  supabaseAdmin,
   loginRateLimitWindowMs,
   loginRateLimitMax,
 } = {}, run) {
@@ -102,7 +103,11 @@ async function withAuthServer({
   };
   app.use(
     '/api/auth',
-    createAuthRouter({ loginRateLimitWindowMs, loginRateLimitMax }),
+    createAuthRouter({
+      supabaseAdmin,
+      loginRateLimitWindowMs,
+      loginRateLimitMax,
+    }),
   );
 
   const server = app.listen(0, '127.0.0.1');
@@ -537,6 +542,99 @@ test('logout does not claim success when Supabase fails', async (t) => {
         );
       },
     );
+  });
+
+  test('completes an invitation password setup for the authenticated user', async () => {
+    let updateArguments;
+    await withAuthServer({
+      supabaseAdmin: {
+        auth: {
+          admin: {
+            async updateUserById(userId, attributes) {
+              updateArguments = { userId, attributes };
+              return { data: { user: { id: userId } }, error: null };
+            },
+          },
+        },
+      },
+    }, async (url) => {
+      const response = await postJson(
+        url,
+        { password: 'A-strong-password-123' },
+        'complete-invitation',
+        { Authorization: 'Bearer access-token' },
+      );
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        success: true,
+        message: 'Your password is ready. You can now sign in.',
+      });
+    });
+
+    assert.deepEqual(updateArguments, {
+      userId: user.id,
+      attributes: { password: 'A-strong-password-123' },
+    });
+  });
+
+  test('rejects weak invitation passwords without changing the Auth user', async () => {
+    const invalidPasswords = [
+      'Ab1!xyz',
+      'abcdef1!',
+      'ABCDEF1!',
+      'Abcdefg!',
+      'Abcdefg1',
+    ];
+
+    for (const password of invalidPasswords) {
+      let updateCalled = false;
+      await withAuthServer({
+        supabaseAdmin: {
+          auth: {
+            admin: {
+              async updateUserById() {
+                updateCalled = true;
+                return { error: null };
+              },
+            },
+          },
+        },
+      }, async (url) => {
+        const response = await postJson(
+          url,
+          { password },
+          'complete-invitation',
+          { Authorization: 'Bearer access-token' },
+        );
+        assert.equal(response.status, 400);
+        assert.equal((await response.text()).includes(password), false);
+      });
+      assert.equal(updateCalled, false);
+    }
+  });
+
+  test('requires a verified bearer token to complete invitation setup', async () => {
+    let updateCalled = false;
+    await withAuthServer({
+      supabaseAdmin: {
+        auth: {
+          admin: {
+            async updateUserById() {
+              updateCalled = true;
+              return { error: null };
+            },
+          },
+        },
+      },
+    }, async (url) => {
+      const response = await postJson(
+        url,
+        { password: 'A-strong-password-123' },
+        'complete-invitation',
+      );
+      assert.equal(response.status, 401);
+    });
+    assert.equal(updateCalled, false);
   });
 
   await t.test('thrown exception', async () => {

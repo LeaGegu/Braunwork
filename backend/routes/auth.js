@@ -4,8 +4,10 @@ import {
   requireAuth,
   requireAuthenticatedUser,
 } from '../middleware/requireAuth.js';
+import { isPasswordValid } from '../../shared/passwordPolicy.js';
 
 export function createAuthRouter({
+  supabaseAdmin,
   loginRateLimitWindowMs = 15 * 60 * 1000,
   loginRateLimitMax = 5,
 } = {}) {
@@ -267,6 +269,62 @@ export function createAuthRouter({
       return res.status(200).json({
         success: true,
         message: 'Session ended.',
+      });
+    },
+  );
+
+  router.post(
+    '/complete-invitation',
+    express.json(),
+    requireAuthenticatedUser,
+    async (req, res) => {
+      const { password } = req.body ?? {};
+      if (
+        typeof password !== 'string' ||
+        !isPasswordValid(password) ||
+        password.length > 128
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            'Use at least 8 characters, including uppercase and lowercase letters, a number, and a special character.',
+        });
+      }
+
+      if (!supabaseAdmin) {
+        return res.status(503).json({
+          success: false,
+          message: 'Invitation completion is temporarily unavailable.',
+        });
+      }
+
+      try {
+        const { error } = await supabaseAdmin.auth.admin.updateUserById(
+          req.user.id,
+          { password },
+        );
+        if (error) {
+          const invalidPassword =
+            typeof error.status === 'number' &&
+            error.status >= 400 &&
+            error.status < 500;
+          return res.status(invalidPassword ? 400 : 503).json({
+            success: false,
+            message: invalidPassword
+              ? 'The password does not meet the account requirements.'
+              : 'Unable to set the account password right now.',
+          });
+        }
+      } catch {
+        return res.status(503).json({
+          success: false,
+          message: 'Unable to set the account password right now.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Your password is ready. You can now sign in.',
       });
     },
   );

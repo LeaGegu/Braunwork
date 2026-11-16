@@ -16,6 +16,7 @@ dist-ssr
 backend/.env
 backend/.env.*
 !backend/.env.example
+backend/.google-oauth-secrets/
 
 # Editor directories and files
 .vscode/*

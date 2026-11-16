@@ -8,13 +8,38 @@ import {
   createPublicInquirySubmitter,
   createSupabaseAdminClient,
 } from './config/supabaseAdmin.js';
+import {
+  getGoogleOAuthIntegrationConfiguration,
+} from './config/googleOAuth.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createGmailOAuthRouter } from './routes/gmailOAuth.js';
 import { createInquiriesRouter } from './routes/inquiries.js';
 import { createPublicInquiriesRouter } from './routes/publicInquiries.js';
+import { createStaffRouter } from './routes/staff.js';
+import { createGoogleOAuthStateStore } from './services/googleOAuthStateStore.js';
+import { createGoogleMailboxConnectionStore } from './services/googleMailboxConnectionStore.js';
+import {
+  createGoogleRefreshTokenStore,
+  createLocalEncryptedGoogleTokenProvider,
+} from './services/googleRefreshTokenStore.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const supabaseAdmin = createSupabaseAdminClient();
+const googleOAuthIntegrationConfiguration =
+  getGoogleOAuthIntegrationConfiguration();
+
+function createGoogleTokenStore() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('A production Google Secret Manager provider is required.');
+  }
+
+  return createGoogleRefreshTokenStore(
+    createLocalEncryptedGoogleTokenProvider({
+      encryptionKey: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY,
+    }),
+  );
+}
 
 function getPositiveIntegerEnv(name, fallback, maximum = Number.MAX_SAFE_INTEGER) {
   const value = process.env[name];
@@ -51,6 +76,7 @@ app.use(
 app.use(
   '/api/auth',
   createAuthRouter({
+    supabaseAdmin,
     loginRateLimitWindowMs: getPositiveIntegerEnv(
       'AUTH_LOGIN_RATE_LIMIT_WINDOW_MS',
       15 * 60 * 1000,
@@ -63,6 +89,23 @@ app.use(
   }),
 );
 app.use('/api/admin/inquiries', createInquiriesRouter());
+app.use(
+  '/api/admin/staff',
+  createStaffRouter({
+    supabaseAdmin,
+    inviteRedirectTo: process.env.SUPABASE_AUTH_REDIRECT_URL,
+  }),
+);
+app.use(
+  '/api',
+  createGmailOAuthRouter({
+    supabaseAdmin,
+    stateStore: createGoogleOAuthStateStore(supabaseAdmin),
+    connectionStore: createGoogleMailboxConnectionStore(supabaseAdmin),
+    createTokenStore: createGoogleTokenStore,
+    oauthConfig: googleOAuthIntegrationConfiguration,
+  }),
+);
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {

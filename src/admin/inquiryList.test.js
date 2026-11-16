@@ -2,15 +2,19 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   formatInquiryDate,
+  formatInquiryDateTime,
   getInquiryAssigneeLabel,
   formatInquiryMessageType,
   formatInquiryStatus,
+  loadInquiryAssignees,
   loadInquiryDetails,
   loadInquiryPage,
+  loadInquirySummary,
   submitInternalNote,
   syncInquiryAssignment,
   syncInquiryStatus,
   updateInquiryAssignment,
+  updateInquiryFollowUp,
   updateInquiryStatus,
 } from './inquiryList.js'
 
@@ -40,6 +44,56 @@ test('loads and validates the backend inquiry pagination shape', async () => {
     inquiries: [{ id: 'inquiry-1', subject: 'Renovation' }],
     pagination: { page: 2, limit: 20, total: 25, totalPages: 2 },
   })
+})
+
+test('sends supported list filters and sort order as query parameters', async () => {
+  let requestedPath
+  await loadInquiryPage(async (path) => {
+    requestedPath = path
+    return jsonResponse(200, {
+      success: true,
+      data: [],
+      pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+    })
+  }, 1, 20, {
+    search: 'kitchen',
+    status: 'waiting',
+    category: 'Modular Kitchen',
+    assigned_to: 'unassigned',
+    sort: 'oldest',
+  })
+
+  assert.equal(
+    requestedPath,
+    '/api/admin/inquiries?page=1&limit=20&search=kitchen&status=waiting&category=Modular+Kitchen&assigned_to=unassigned&sort=oldest',
+  )
+})
+
+test('loads summary counts and eligible staff options', async () => {
+  const summary = await loadInquirySummary(async (path) => {
+    assert.equal(path, '/api/admin/inquiries/summary')
+    return jsonResponse(200, {
+      success: true,
+      data: {
+        total: 2,
+        new: 1,
+        in_progress: 0,
+        waiting: 0,
+        resolved: 1,
+        archived: 0,
+      },
+    })
+  })
+  assert.equal(summary.total, 2)
+
+  const assignees = await loadInquiryAssignees(async (path) => {
+    assert.equal(path, '/api/admin/inquiries/assignees')
+    return jsonResponse(200, {
+      success: true,
+      data: [{ id: 'staff-1', full_name: 'Staff Member' }],
+    })
+  })
+  assert.deepEqual(assignees, [{ id: 'staff-1', full_name: 'Staff Member' }])
 })
 
 test('loads the latest directory assignee name when returning to the inquiry list', async () => {
@@ -101,6 +155,7 @@ test('formats statuses and safely handles invalid dates', () => {
   assert.equal(formatInquiryStatus('in_progress'), 'In Progress')
   assert.equal(formatInquiryStatus('new'), 'New')
   assert.equal(formatInquiryDate('not-a-date'), 'Date unavailable')
+  assert.equal(formatInquiryDateTime('not-a-date'), 'Date unavailable')
 })
 
 test('loads detail data and associated messages using the authenticated request', async () => {
@@ -123,6 +178,15 @@ test('loads detail data and associated messages using the authenticated request'
     body: 'Internal follow-up',
     created_at: '2026-01-02T00:00:00.000Z',
   }]
+  const activities = [{
+    id: 1,
+    inquiry_id: inquiry.id,
+    actor_name: 'Staff Member',
+    activity_type: 'status_changed',
+    previous_value: 'new',
+    new_value: 'in_progress',
+    created_at: '2026-01-03T00:00:00.000Z',
+  }]
   let requestedPath
   const result = await loadInquiryDetails(async (path) => {
     requestedPath = path
@@ -130,11 +194,12 @@ test('loads detail data and associated messages using the authenticated request'
       success: true,
       inquiry,
       messages,
+      activities,
     })
   }, inquiry.id)
 
   assert.equal(requestedPath, `/api/admin/inquiries/${inquiry.id}`)
-  assert.deepEqual(result, { inquiry, messages })
+  assert.deepEqual(result, { inquiry, messages, activities })
 })
 
 test('rejects invalid IDs without making a request', async () => {
@@ -284,14 +349,17 @@ test('assigns to the authenticated user and verifies the updated assignment', as
       success: true,
       inquiry: updatedInquiry,
     })
-  }, inquiryId, inquiryId)
+  }, inquiryId, inquiryId, null)
 
   assert.deepEqual(requestArguments, [
     `/api/admin/inquiries/${inquiryId}/assignment`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assigned_to: inquiryId }),
+      body: JSON.stringify({
+        assigned_to: inquiryId,
+        expected_assigned_to: null,
+      }),
     },
   ])
   assert.deepEqual(result, updatedInquiry)
@@ -304,9 +372,12 @@ test('unassigns an inquiry by sending assigned_to null', async () => {
   const result = await updateInquiryAssignment(async (_path, options) => {
     requestBody = JSON.parse(options.body)
     return jsonResponse(200, { success: true, inquiry: updatedInquiry })
-  }, inquiryId, null)
+  }, inquiryId, null, inquiryId)
 
-  assert.deepEqual(requestBody, { assigned_to: null })
+  assert.deepEqual(requestBody, {
+    assigned_to: null,
+    expected_assigned_to: inquiryId,
+  })
   assert.deepEqual(result, updatedInquiry)
 })
 
@@ -315,7 +386,7 @@ test('does not confirm assignment changes on failure or mismatched response', as
   await assert.rejects(
     updateInquiryAssignment(async () => jsonResponse(503, {
       message: 'private assignment error',
-    }), inquiryId, inquiryId),
+    }), inquiryId, inquiryId, null),
     { message: 'Unable to update the assignment right now. Please try again.' },
   )
 
@@ -323,9 +394,134 @@ test('does not confirm assignment changes on failure or mismatched response', as
     updateInquiryAssignment(async () => jsonResponse(200, {
       success: true,
       inquiry: { id: inquiryId, assigned_to: null },
-    }), inquiryId, inquiryId),
+    }), inquiryId, inquiryId, null),
     { message: 'The assignment update could not be confirmed. Please try again.' },
   )
+})
+
+test('saves and clears a validated follow-up through the authenticated API', async () => {
+  const inquiryId = '00000000-0000-4000-8000-000000000001'
+  const followUpAt = '2026-03-01T10:00:00.000Z'
+  const updatedInquiry = {
+    id: inquiryId,
+    follow_up_at: followUpAt,
+    follow_up_note: 'Call customer',
+  }
+  let requestArguments
+  const result = await updateInquiryFollowUp(async (...args) => {
+    requestArguments = args
+    return jsonResponse(200, { success: true, inquiry: updatedInquiry })
+  }, inquiryId, followUpAt, ' Call customer ')
+
+  assert.equal(requestArguments[0], `/api/admin/inquiries/${inquiryId}/follow-up`)
+  assert.deepEqual(JSON.parse(requestArguments[1].body), {
+    follow_up_at: followUpAt,
+    follow_up_note: 'Call customer',
+  })
+  assert.deepEqual(result, updatedInquiry)
+
+  const clearedInquiry = {
+    id: inquiryId,
+    follow_up_at: null,
+    follow_up_note: null,
+  }
+  let clearRequestBody
+  const clearedResult = await updateInquiryFollowUp(
+    async (_path, options) => {
+      clearRequestBody = JSON.parse(options.body)
+      return jsonResponse(200, { success: true, inquiry: clearedInquiry })
+    },
+    inquiryId,
+    null,
+    null,
+  )
+  assert.deepEqual(clearedResult, clearedInquiry)
+  assert.deepEqual(clearRequestBody, {
+    follow_up_at: null,
+    follow_up_note: null,
+  })
+
+  await assert.rejects(
+    updateInquiryFollowUp(async () => jsonResponse(400, {}), inquiryId, null, 'leftover note'),
+    { message: 'Enter a valid follow-up date and note.' },
+  )
+})
+
+test('confirms create and edit follow-ups when timestamp representations differ', async (t) => {
+  const inquiryId = '00000000-0000-4000-8000-000000000001'
+  const cases = [
+    {
+      name: 'creating a follow-up with a different timezone offset',
+      requestedAt: '2026-03-01T10:00:00.000Z',
+      returnedAt: '2026-03-01T05:00:00-05:00',
+      note: 'Create reminder',
+    },
+    {
+      name: 'editing a follow-up with different fractional-second precision',
+      requestedAt: '2026-03-02T10:00:00.123Z',
+      returnedAt: '2026-03-02T10:00:00.123000+00:00',
+      note: 'Edit reminder',
+    },
+  ]
+
+  for (const { name, requestedAt, returnedAt, note } of cases) {
+    await t.test(name, async () => {
+      const result = await updateInquiryFollowUp(
+        async () => jsonResponse(200, {
+          success: true,
+          inquiry: {
+            id: inquiryId,
+            follow_up_at: returnedAt,
+            follow_up_note: note,
+          },
+        }),
+        inquiryId,
+        requestedAt,
+        note,
+      )
+
+      assert.equal(result.follow_up_at, returnedAt)
+    })
+  }
+})
+
+test('does not confirm a different or invalid returned follow-up timestamp', async (t) => {
+  const inquiryId = '00000000-0000-4000-8000-000000000001'
+  for (const returnedAt of [
+    '2026-03-01T10:00:00.001Z',
+    'not-a-timestamp',
+  ]) {
+    await t.test(returnedAt, async () => {
+      await assert.rejects(
+        updateInquiryFollowUp(
+          async () => jsonResponse(200, {
+            success: true,
+            inquiry: {
+              id: inquiryId,
+              follow_up_at: returnedAt,
+              follow_up_note: 'Call customer',
+            },
+          }),
+          inquiryId,
+          '2026-03-01T10:00:00.000Z',
+          'Call customer',
+        ),
+        { message: 'The follow-up update could not be confirmed.' },
+      )
+    })
+  }
+
+  await t.test('rejects an invalid requested timestamp without making a request', async () => {
+    let requestMade = false
+    await assert.rejects(
+      updateInquiryFollowUp(async () => {
+        requestMade = true
+        return jsonResponse(200, {})
+      }, inquiryId, 'not-a-timestamp', 'Call customer'),
+      { message: 'Enter a valid follow-up date and note.' },
+    )
+    assert.equal(requestMade, false)
+  })
 })
 
 test('synchronizes only assigned_to in the dashboard inquiry row', () => {
